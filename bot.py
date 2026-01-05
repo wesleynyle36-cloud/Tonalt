@@ -2,9 +2,14 @@ import os
 import json
 import firebase_admin
 from firebase_admin import credentials, db
-from pyrogram import Client, filters
+from pyrogram import Client
 
-# ---------------- FIREBASE ----------------
+# ===== TELEGRAM CONFIG =====
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+
+# ===== FIREBASE CONFIG =====
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
 
 cred = credentials.Certificate(firebase_key)
@@ -12,38 +17,24 @@ firebase_admin.initialize_app(cred, {
     "databaseURL": "https://telegram-bot-ae675-default-rtdb.asia-southeast1.firebasedatabase.app"
 })
 
-# Test write on startup
-ref = db.reference("test")
-ref.set({
-    "status": "firebase connected",
-    "working": True
-})
-
-# ---------------- TELEGRAM ----------------
-
-
+# ===== TELEGRAM BOT =====
 app = Client(
     "tonalt_bot",
-    api_id="API_ID",
-    api_hash="API_HASH",
-    bot_token="BOT_TOKEN"
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
 )
 
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    user_id = message.from_user.id
+@app.on_message()
+def all_messages(client, message):
+    print("Message received:", message.text)
+    message.reply_text("👋 I received your message!")
 
-    # Save user to Firebase
-    db.reference(f"users/{user_id}").set({
-        "joined": True
+    ref = db.reference("test")
+    ref.set({
+        "status": "firebase connected",
+        "user": message.from_user.id
     })
 
-    await message.reply_text("👋 Welcome! You are registered.")
-
-print("Bot is running...")
+print("🚀 Bot is running...")
 app.run()
-
-
-
-
-
