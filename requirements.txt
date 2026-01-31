@@ -1,3 +1,9 @@
+<<<<<<< HEAD
 pyrogram==2.0.106
 tgcrypto
 firebase-admin
+=======
+pyrogram==2.0.106
+tgcrypto
+firebase-admin
+>>>>>>> 3f7e4fe (Initial bot deploy)
