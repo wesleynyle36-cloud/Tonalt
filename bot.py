@@ -32,7 +32,7 @@ REF_REWARD = 100
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ================== FIREBASE ==================
-cred = credentials.Certificate("firebase_key.json")
+cred = credentials.Certificate("FIREBASE_KEY_JSON ")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
