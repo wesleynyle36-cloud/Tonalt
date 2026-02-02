@@ -1,8 +1,10 @@
 import os
-import re
-import requests
-import asyncio
-from dotenv import load_dotenv
+import json
+import logging
+from datetime import datetime
+
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 from telegram import (
     Update,
@@ -18,156 +20,148 @@ from telegram.ext import (
     filters,
 )
 
-import firebase_admin
-from firebase_admin import credentials, db
-
-# ---------------- LOAD ENV ----------------
-load_dotenv()
+# ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
 
 REG_FEE = 300
 MIN_WITHDRAW = 200
 PLATFORM_FEE = 20
 REF_REWARD = 100
 
-# ---------------- FIREBASE ----------------
-cred = credentials.Certificate("firebase_key.json")
-firebase_admin.initialize_app(cred, {
-    "databaseURL": FIREBASE_DB_URL
-})
+# ================= LOGGING =================
 
-users_ref = db.reference("users")
-withdrawals_ref = db.reference("withdrawals")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
-# ---------------- HELPERS ----------------
-def is_valid_email(email: str) -> bool:
-    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+# ================= FIREBASE =================
 
-def paystack_verify(email: str):
-    url = "https://api.paystack.co/transaction"
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"
+firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+if not firebase_json:
+    raise RuntimeError("FIREBASE_SERVICE_ACCOUNT not set")
+
+cred = credentials.Certificate(json.loads(firebase_json))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# ================= HELPERS =================
+
+def user_ref(uid: int):
+    return db.collection("users").document(str(uid))
+
+
+def get_user(uid: int):
+    doc = user_ref(uid).get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
+
+def create_user(uid: int, username: str, referrer: str | None):
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={uid}"
+
+    data = {
+        "user_id": uid,
+        "username": username,
+        "paid": False,
+        "balance": 0,
+        "earnings": 0,
+        "ref_count": 0,
+        "ref_link": ref_link,
+        "referred_by": referrer,
+        "withdraw_pending": False,
+        "created_at": datetime.utcnow(),
     }
-    params = {"perPage": 50}
 
-    r = requests.get(url, headers=headers, params=params)
-    if r.status_code != 200:
-        return False
+    user_ref(uid).set(data)
 
-    data = r.json().get("data", [])
-    for tx in data:
-        if (
-            tx["status"] == "success"
-            and tx["customer"]["email"].lower() == email.lower()
-            and int(tx["amount"] / 100) >= REG_FEE
-        ):
-            return True
-    return False
+    # reward referrer ONCE
+    if referrer:
+        ref_doc = user_ref(referrer).get()
+        if ref_doc.exists:
+            ref_data = ref_doc.to_dict()
+            if uid not in ref_data.get("rewarded_refs", []):
+                user_ref(referrer).update({
+                    "balance": firestore.Increment(REF_REWARD),
+                    "earnings": firestore.Increment(REF_REWARD),
+                    "ref_count": firestore.Increment(1),
+                    "rewarded_refs": firestore.ArrayUnion([uid])
+                })
 
-def main_menu():
+
+def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Pay", callback_data="pay")],
-        [InlineKeyboardButton("✅ Check Payment", callback_data="check")],
-        [InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")],
-        [InlineKeyboardButton("🔗 Referral Link", callback_data="ref")],
-        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+        [InlineKeyboardButton("💳 Pay Registration", callback_data="pay")],
+        [InlineKeyboardButton("💰 Balance", callback_data="balance")],
+        [InlineKeyboardButton("👥 Referrals", callback_data="referrals")],
+        [InlineKeyboardButton("🏦 Withdraw", callback_data="withdraw")],
     ])
 
-# ---------------- BOT HANDLERS ----------------
+# ================= HANDLERS =================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = str(user.id)
+    uid = update.effective_user.id
+    username = update.effective_user.username or "no_username"
 
-    users = users_ref.get() or {}
+    referrer = None
+    if context.args:
+        referrer = context.args[0]
 
-    if uid not in users:
-        ref_by = context.args[0] if context.args else None
-        users_ref.child(uid).set({
-            "paid": False,
-            "email": "",
-            "balance": 0,
-            "earnings": 0,
-            "referrals": 0,
-            "ref_by": ref_by,
-            "withdraw_pending": False
-        })
-
-        if ref_by and ref_by in users:
-            users_ref.child(ref_by).update({
-                "balance": users[ref_by].get("balance", 0) + REF_REWARD,
-                "earnings": users[ref_by].get("earnings", 0) + REF_REWARD,
-                "referrals": users[ref_by].get("referrals", 0) + 1
-            })
+    user = get_user(uid)
+    if not user:
+        create_user(uid, username, referrer)
 
     await update.message.reply_text(
         "👋 Welcome to TONalt\n\n"
-        "💳 Registration fee: KES 300\n"
-        "🔓 Pay to unlock all features",
-        reply_markup=main_menu()
+        f"💳 Registration fee: KES {REG_FEE}\n"
+        "Pay to unlock all features.",
+        reply_markup=main_keyboard()
     )
+
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    uid = str(q.from_user.id)
-    user = users_ref.child(uid).get()
+    uid = q.from_user.id
+    user = get_user(uid)
 
+    if not user:
+        await q.message.reply_text("❌ User not found. Use /start")
+        return
+
+    # PAYMENT
     if q.data == "pay":
-        if user.get("email"):
-            await q.message.reply_text(
-                "💳 Pay via Paystack:\n"
-                "https://paystack.com/pay/tonalt\n\n"
-                "Use the SAME email you registered."
-            )
-        else:
-            context.user_data["awaiting_email"] = True
-            await q.message.reply_text(
-                "📧 Enter the EMAIL you will use on Paystack\n"
-                "Example: john@gmail.com"
-            )
-
-    elif q.data == "check":
-        if not user.get("email"):
-            await q.message.reply_text("❌ No email saved yet.")
-            return
-
-        if user.get("paid"):
-            await q.message.reply_text("✅ Payment already confirmed.")
-            return
-
-        if paystack_verify(user["email"]):
-            users_ref.child(uid).update({
-                "paid": True,
-                "balance": REG_FEE,
-                "earnings": REG_FEE
-            })
-            await q.message.reply_text("🎉 Payment confirmed! Bot unlocked.")
-        else:
-            await q.message.reply_text("❌ Payment not found yet.")
-
-    elif q.data != "pay" and not user.get("paid"):
-        await q.message.reply_text("🔒 Please complete payment first.")
-
-    elif q.data == "dashboard":
         await q.message.reply_text(
-            f"💰 Balance: KES {user['balance']}\n"
-            f"🏆 Earnings: KES {user['earnings']}\n"
-            f"👥 Referrals: {user['referrals']}"
+            "💳 Please complete your registration payment via Paystack.\n\n"
+            "Once payment is confirmed, your account will unlock automatically."
         )
 
-    elif q.data == "ref":
-        link = f"https://t.me/{BOT_USERNAME}?start={uid}"
-        await q.message.reply_text(f"🔗 Your referral link:\n{link}")
+    # BLOCK ALL IF NOT PAID
+    elif not user["paid"]:
+        await q.message.reply_text(
+            "🔒 You must complete registration payment first."
+        )
+
+    elif q.data == "balance":
+        await q.message.reply_text(
+            f"💰 Balance: KES {user['balance']}\n"
+            f"📈 Total Earnings: KES {user['earnings']}"
+        )
+
+    elif q.data == "referrals":
+        await q.message.reply_text(
+            f"👥 Referrals: {user['ref_count']}\n\n"
+            f"🔗 Your referral link:\n{user['ref_link']}"
+        )
 
     elif q.data == "withdraw":
         if user["withdraw_pending"]:
-            await q.message.reply_text("⏳ Withdrawal already pending.")
+            await q.message.reply_text("⏳ You already have a pending withdrawal.")
             return
 
         if user["balance"] < MIN_WITHDRAW:
@@ -176,70 +170,79 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        context.user_data["awaiting_withdraw"] = True
+        context.user_data["withdraw_stage"] = "details"
         await q.message.reply_text(
-            "✍️ Send withdrawal details in this format:\n\n"
+            "🏦 Send withdrawal details in this format:\n\n"
             "Name: John Doe\n"
-            "Phone: 0712345678"
+            "Phone: 07XXXXXXXX"
         )
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_user.id)
-    text = update.message.text.strip()
 
-    if context.user_data.get("awaiting_email"):
-        if not is_valid_email(text):
-            await update.message.reply_text("❌ Invalid email. Try again.")
+async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = get_user(uid)
+
+    if not user:
+        return
+
+    if context.user_data.get("withdraw_stage") == "details":
+        text = update.message.text
+
+        try:
+            lines = text.splitlines()
+            name = lines[0].split(":", 1)[1].strip()
+            phone = lines[1].split(":", 1)[1].strip()
+        except Exception:
+            await update.message.reply_text("❌ Format incorrect. Try again.")
             return
 
-        users_ref.child(uid).update({"email": text})
-        context.user_data["awaiting_email"] = False
+        amount = user["balance"] - PLATFORM_FEE
 
-        await update.message.reply_text(
-            "✅ Email saved.\n"
-            "Now complete payment via Paystack.",
-            reply_markup=main_menu()
-        )
-
-    elif context.user_data.get("awaiting_withdraw"):
-        user = users_ref.child(uid).get()
-        payout = user["balance"] - PLATFORM_FEE
-
-        users_ref.child(uid).update({
-            "balance": 0,
-            "withdraw_pending": True
+        # lock withdrawal
+        user_ref(uid).update({
+            "withdraw_pending": True,
+            "balance": 0
         })
 
-        withdrawals_ref.push({
+        db.collection("withdrawals").add({
             "user_id": uid,
-            "details": text,
-            "amount": payout,
-            "status": "pending"
+            "name": name,
+            "phone": phone,
+            "gross": user["balance"],
+            "fee": PLATFORM_FEE,
+            "net": amount,
+            "status": "pending",
+            "created_at": datetime.utcnow()
         })
 
         await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=(
-                f"💸 WITHDRAWAL REQUEST\n\n"
-                f"User: {uid}\n"
-                f"Amount: KES {payout}\n"
-                f"Details:\n{text}"
-            )
+            ADMIN_CHAT_ID,
+            f"🏦 WITHDRAWAL REQUEST\n\n"
+            f"User: {uid}\n"
+            f"Name: {name}\n"
+            f"Phone: {phone}\n"
+            f"Amount: KES {amount}"
         )
 
-        context.user_data["awaiting_withdraw"] = False
-        await update.message.reply_text("✅ Withdrawal request sent.")
+        context.user_data.clear()
 
-# ---------------- MAIN ----------------
-async def main():
+        await update.message.reply_text(
+            "✅ Withdrawal request submitted.\n"
+            "You’ll be notified once processed."
+        )
+
+# ================= MAIN =================
+
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    print("🚀 TONalt bot running...")
-    await app.run_polling()
+    logging.info("🚀 TONalt bot running...")
+    app.run_polling()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
