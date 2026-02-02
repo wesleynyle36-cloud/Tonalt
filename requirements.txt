@@ -3,8 +3,6 @@ firebase-admin
 python-dotenv
 requests
 
-pyrogram==2.0.106
-tgcrypto
-firebase-admin
+
 
 
