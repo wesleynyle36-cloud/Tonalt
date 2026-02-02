@@ -1,5 +1,10 @@
+python-telegram-bot==20.7
+firebase-admin
+python-dotenv
+requests
 
 pyrogram==2.0.106
 tgcrypto
 firebase-admin
+
 
