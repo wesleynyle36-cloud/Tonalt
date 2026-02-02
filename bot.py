@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from datetime import datetime
 
 import firebase_admin
@@ -21,6 +22,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_USERNAME = os.getenv("BOT_USERNAME")  # e.g. TONaltBot
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
+FIREBASE_KEY_JSON = os.getenv("FIREBASE_KEY_JSON")  # Full JSON as env variable
 
 # ================== CONFIG ==================
 REG_FEE = 300
@@ -32,7 +34,8 @@ REF_REWARD = 100
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ================== FIREBASE ==================
-cred = credentials.Certificate("FIREBASE_KEY_JSON")
+cred_dict = json.loads(FIREBASE_KEY_JSON)
+cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
