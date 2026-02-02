@@ -22,7 +22,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_USERNAME = os.getenv("BOT_USERNAME")  # e.g. TONaltBot
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-FIREBASE_KEY_JSON = os.getenv("FIREBASE_KEY_JSON")  # Full JSON as env variable
+FIREBASE_KEY_JSON = os.getenv("FIREBASE_KEY_JSON")  # Full JSON string
 
 # ================== CONFIG ==================
 REG_FEE = 300
@@ -219,7 +219,7 @@ def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
     logging.info("🚀 TONalt bot running...")
-    app.run_polling()
+    app.run_polling(close_loop=False)  # critical for Render
 
 if __name__ == "__main__":
     main()
